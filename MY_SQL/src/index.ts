@@ -1,6 +1,16 @@
 #!/usr/bin/env node
 
-import 'dotenv/config';
+import { config as dotenvConfig } from 'dotenv';
+import * as path from 'path';
+import { fileURLToPath } from 'url';
+
+// ES 모듈에서 __dirname 대체
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// 단순하게 dotenv 로드
+dotenvConfig({ path: path.join(__dirname, '../.env') });
+console.error('dotenv 로드 시도 완료');
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -37,6 +47,18 @@ const sshConfig = {
   privateKeyPath: process.env.SSH_PRIVATE_KEY_PATH || '',
   localPort: parseInt(process.env.SSH_LOCAL_PORT || '3307'),
 };
+
+// 디버깅: 환경변수 로딩 확인
+console.error('=== 환경변수 디버깅 ===');
+console.error('SSH_ENABLED:', process.env.SSH_ENABLED);
+console.error('SSH_HOST:', process.env.SSH_HOST);
+console.error('sshConfig.enabled:', sshConfig.enabled);
+console.error('sshConfig.enabled:', sshConfig.enabled);
+console.error('sshConfig.host:', sshConfig.host);
+console.error('sshConfig.port:', sshConfig.port);
+console.error('sshConfig.username:', sshConfig.username);
+console.error('sshConfig.localPort:', sshConfig.localPort);
+console.error('=====================');
 
 // 전역 연결 풀 및 SSH 클라이언트
 let connectionPool: mysql.Pool | null = null;
@@ -92,7 +114,11 @@ async function createSSHTunnel(): Promise<number> {
       host: sshConfig.host,
       port: sshConfig.port,
       username: sshConfig.username,
+      timeout: 30000, // 30초 타임아웃
+      readyTimeout: 30000, // 준비 타임아웃 30초
     };
+    
+    console.error('SSH 연결을 시도합니다:', connectOptions.host + ':' + connectOptions.port);
 
     if (sshConfig.privateKeyPath && fs.existsSync(sshConfig.privateKeyPath)) {
       connectOptions.privateKey = fs.readFileSync(sshConfig.privateKeyPath);
@@ -114,14 +140,36 @@ async function getConnection(): Promise<mysql.Pool> {
 
     // SSH 터널링이 활성화된 경우
     if (sshConfig.enabled) {
-      const localPort = await createSSHTunnel();
-      finalConfig.host = 'localhost';
-      finalConfig.port = localPort;
-      console.error(`SSH 터널을 통해 MySQL에 연결합니다: localhost:${localPort}`);
+      console.error('SSH 터널 생성을 시도합니다...');
+      try {
+        const localPort = await createSSHTunnel();
+        finalConfig.host = 'localhost';
+        finalConfig.port = localPort;
+        console.error(`SSH 터널을 통해 MySQL에 연결합니다: localhost:${localPort}`);
+      } catch (error) {
+        console.error('SSH 터널 생성 실패:', error);
+        throw error;
+      }
     }
 
-    connectionPool = mysql.createPool(finalConfig);
-    console.error('MySQL에 연결되었습니다.');
+    try {
+      console.error('MySQL 연결 풀 생성 중...');
+      console.error('  host:', finalConfig.host);
+      console.error('  port:', finalConfig.port);
+      console.error('  database:', finalConfig.database);
+      console.error('  user:', finalConfig.user);
+      connectionPool = mysql.createPool(finalConfig);
+      console.error('MySQL 연결 풀이 생성되었습니다.');
+      
+      // 연결 테스트
+      const testConnection = await connectionPool.getConnection();
+      console.error('MySQL 연결 테스트 성공!');
+      testConnection.release();
+      
+    } catch (error) {
+      console.error('MySQL 연결 중 오류 발생:', error);
+      throw error;
+    }
   }
   return connectionPool;
 }
@@ -422,7 +470,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       throw error;
     }
     
-    console.error('MySQL 오류:', error);
+    console.error('=== MySQL 오류 상세 정보 ===');
+    console.error('오류 타입:', typeof error);
+    console.error('오류 객체:', error);
+    console.error('오류 메시지:', error instanceof Error ? error.message : String(error));
+    console.error('스택 트레이스:', error instanceof Error ? error.stack : 'N/A');
+    console.error('===========================');
+    
     throw new McpError(
       ErrorCode.InternalError,
       `데이터베이스 오류: ${error instanceof Error ? error.message : String(error)}`
@@ -466,7 +520,14 @@ process.on('SIGTERM', async () => {
   process.exit(0);
 });
 
+console.error('=== 서버 시작 시도 ===');
+
 main().catch((error) => {
-  console.error('서버 시작 오류:', error);
+  console.error('=== 서버 시작 오류 ===');
+  console.error('오류 타입:', typeof error);
+  console.error('오류 객체:', error);
+  console.error('오류 메시지:', error instanceof Error ? error.message : String(error));
+  console.error('스택 트레이스:', error instanceof Error ? error.stack : 'N/A');
+  console.error('====================');
   process.exit(1);
 }); 
