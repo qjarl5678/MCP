@@ -10,6 +10,9 @@ import {
   McpError,
 } from '@modelcontextprotocol/sdk/types.js';
 import mysql from 'mysql2/promise';
+import { Client } from 'ssh2';
+import * as fs from 'fs';
+import * as net from 'net';
 
 // MySQL 연결 설정
 const config = {
@@ -24,13 +27,100 @@ const config = {
   timeout: 60000,
 };
 
-// 전역 연결 풀
+// SSH 설정
+const sshConfig = {
+  enabled: process.env.SSH_ENABLED === 'true',
+  host: process.env.SSH_HOST || '',
+  port: parseInt(process.env.SSH_PORT || '22'),
+  username: process.env.SSH_USER || '',
+  password: process.env.SSH_PASSWORD || '',
+  privateKeyPath: process.env.SSH_PRIVATE_KEY_PATH || '',
+  localPort: parseInt(process.env.SSH_LOCAL_PORT || '3307'),
+};
+
+// 전역 연결 풀 및 SSH 클라이언트
 let connectionPool: mysql.Pool | null = null;
+let sshClient: Client | null = null;
+let sshServer: net.Server | null = null;
+
+// SSH 터널 생성 함수
+async function createSSHTunnel(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const sshConn = new Client();
+    sshClient = sshConn;
+
+    sshConn.on('ready', () => {
+      console.error('SSH 연결이 성공했습니다.');
+      
+      // 로컬 서버 생성
+      const server = net.createServer((sock) => {
+        sshConn.forwardOut(
+          sock.remoteAddress || '',
+          sock.remotePort || 0,
+          config.host,
+          config.port,
+          (err, stream) => {
+            if (err) {
+              console.error('SSH 포워딩 오류:', err);
+              sock.end();
+              return;
+            }
+            sock.pipe(stream).pipe(sock);
+          }
+        );
+      });
+
+      server.listen(sshConfig.localPort, 'localhost', () => {
+        console.error(`SSH 터널이 localhost:${sshConfig.localPort}에서 시작되었습니다.`);
+        sshServer = server;
+        resolve(sshConfig.localPort);
+      });
+
+      server.on('error', (err) => {
+        console.error('SSH 터널 서버 오류:', err);
+        reject(err);
+      });
+    });
+
+    sshConn.on('error', (err) => {
+      console.error('SSH 연결 오류:', err);
+      reject(err);
+    });
+
+    // SSH 연결 설정
+    const connectOptions: any = {
+      host: sshConfig.host,
+      port: sshConfig.port,
+      username: sshConfig.username,
+    };
+
+    if (sshConfig.privateKeyPath && fs.existsSync(sshConfig.privateKeyPath)) {
+      connectOptions.privateKey = fs.readFileSync(sshConfig.privateKeyPath);
+    } else if (sshConfig.password) {
+      connectOptions.password = sshConfig.password;
+    } else {
+      reject(new Error('SSH 인증 정보가 없습니다. 비밀번호 또는 개인키를 설정하세요.'));
+      return;
+    }
+
+    sshConn.connect(connectOptions);
+  });
+}
 
 // 데이터베이스 연결 함수
 async function getConnection(): Promise<mysql.Pool> {
   if (!connectionPool) {
-    connectionPool = mysql.createPool(config);
+    let finalConfig = { ...config };
+
+    // SSH 터널링이 활성화된 경우
+    if (sshConfig.enabled) {
+      const localPort = await createSSHTunnel();
+      finalConfig.host = 'localhost';
+      finalConfig.port = localPort;
+      console.error(`SSH 터널을 통해 MySQL에 연결합니다: localhost:${localPort}`);
+    }
+
+    connectionPool = mysql.createPool(finalConfig);
     console.error('MySQL에 연결되었습니다.');
   }
   return connectionPool;
@@ -347,20 +437,32 @@ async function main() {
   console.error('MySQL MCP 서버가 시작되었습니다.');
 }
 
-// 프로세스 종료 시 연결 정리
-process.on('SIGINT', async () => {
+// 연결 정리 함수
+async function cleanup() {
   if (connectionPool) {
     await connectionPool.end();
     console.error('MySQL 연결이 종료되었습니다.');
   }
+  
+  if (sshServer) {
+    sshServer.close();
+    console.error('SSH 터널 서버가 종료되었습니다.');
+  }
+  
+  if (sshClient) {
+    sshClient.end();
+    console.error('SSH 연결이 종료되었습니다.');
+  }
+}
+
+// 프로세스 종료 시 연결 정리
+process.on('SIGINT', async () => {
+  await cleanup();
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
-  if (connectionPool) {
-    await connectionPool.end();
-    console.error('MySQL 연결이 종료되었습니다.');
-  }
+  await cleanup();
   process.exit(0);
 });
 
