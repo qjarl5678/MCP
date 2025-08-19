@@ -53,19 +53,14 @@ Claude Desktop의 `claude_desktop_config.json` 파일에 다음을 추가:
   "mcpServers": {
     "mysql": {
       "command": "node",
-      "args": ["D:/workspace/MCP/MY_SQL/dist/index.js"],
-      "env": {
-        "DB_HOST": "localhost",
-        "DB_PORT": "3306",
-        "DB_DATABASE": "your_database", 
-        "DB_USER": "root",
-        "DB_PASSWORD": "your_password",
-        "DB_SSL": "false"
-      }
+      "args": ["D:/workspace/MCP/MY_SQL/dist/index.js"]
     }
   }
 }
 ```
+
+> **참고**: dotenv를 사용하여 `.env` 파일에서 자동으로 환경변수를 읽어옵니다. 
+> 별도로 mcp 연결 시 `env` 설정을 추가할 필요가 없습니다!
 
 ## 보안 주의사항
 
